@@ -27,6 +27,7 @@ export default function Navbar() {
       <div style={{ display: 'flex', gap: '8px', backgroundColor: '#1e293b', padding: '6px', borderRadius: '16px', border: '1px solid #334155' }}>
         <Link to="/" style={getStyle('/')}>Students Overview</Link>
         <Link to="/metrics" style={getStyle('/metrics')}>Lab Analytics</Link>
+        <Link to="/restrictions" style={getStyle('/restrictions')}>Access Control</Link>
       </div>
     </nav>
   );

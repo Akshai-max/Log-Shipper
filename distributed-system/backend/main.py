@@ -25,10 +25,19 @@ suspicious_activity_count = Counter("suspicious_activity_count", "Suspicious hig
 import time
 
 clients_db = {}
+restricted_domains = set()
+
+class RestrictionRequest(BaseModel):
+    domain: str
+
+class UserInfo(BaseModel):
+    email: str
+    name: str
 
 class LogEntry(BaseModel):
     machine_id: str
     user: Optional[str] = "unknown"
+    user_name: Optional[str] = "Unknown User"
     event: str
     url: str
     timestamp: Optional[str] = ""
@@ -58,6 +67,7 @@ async def receive_log(log: LogEntry):
     if m_id not in clients_db:
         clients_db[m_id] = {
             "machine_id": m_id,
+            "user": log.user,
             "last_seen": now,
             "total_events": 0,
             "suspicious_score": 0,
@@ -67,6 +77,10 @@ async def receive_log(log: LogEntry):
         active_users.set(len(clients_db))
     
     client = clients_db[m_id]
+    if log.user and log.user != "unknown":
+        client["user"] = log.user
+    if log.user_name and log.user_name != "Unknown User":
+        client["user_name"] = log.user_name
     client["last_seen"] = now
     client["total_events"] += 1
     client["suspicious_score"] += score_increment
@@ -84,6 +98,13 @@ async def receive_log(log: LogEntry):
 
     return {"status": "success"}
 
+@app.post("/user-info")
+async def register_user_info(info: UserInfo):
+    # This endpoint can be used for explicit registration
+    # For now, we mainly rely on /log to update the DB, 
+    # but we'll store this if we can map it to a machine later.
+    return {"status": "success", "received": info}
+
 @app.get("/clients")
 def get_clients_summary():
     now = int(time.time())
@@ -95,6 +116,8 @@ def get_clients_summary():
             
         summary.append({
             "machine_id": m_id,
+            "user": data.get("user", "unknown"),
+            "user_name": data.get("user_name", "Unknown User"),
             "status": "active" if (now - data["last_seen"]) < 60 else "idle",
             "total_events": data["total_events"],
             "last_seen": data["last_seen"],
@@ -112,6 +135,8 @@ def get_client_detail(machine_id: str):
     data = clients_db[machine_id]
     return {
         "machine_id": machine_id,
+        "user": data.get("user", "unknown"),
+        "user_name": data.get("user_name", "Unknown User"),
         "domains": data["domains"],
         "alerts": ["High Suspicious Activity"] if data["suspicious_score"] > 30 else [],
         "activity_timeline": data["activity_timeline"]
@@ -146,6 +171,38 @@ def get_stats():
         "tab_switch_count": tab_switches,
         "domains": domains
     }
+
+@app.get("/restrictions")
+def get_restrictions():
+    return list(restricted_domains)
+
+@app.post("/restrictions/add")
+def add_restriction(req: RestrictionRequest):
+    domain = req.domain.lower().strip()
+    if not domain:
+        return {"status": "error", "message": "Empty domain"}
+    
+    # Extract domain from URL if needed
+    if "://" in domain:
+        parsed = urlparse(domain)
+        domain = parsed.netloc
+    elif "/" in domain:
+        domain = domain.split("/")[0]
+        
+    # Strip 'www.' to ensure 'reddit.com' covers all subdomains
+    if domain.startswith("www."):
+        domain = domain[4:]
+        
+    if domain:
+        restricted_domains.add(domain)
+    return {"status": "success", "restricted_domains": list(restricted_domains)}
+
+@app.post("/restrictions/remove")
+def remove_restriction(req: RestrictionRequest):
+    domain = req.domain.lower().strip()
+    if domain in restricted_domains:
+        restricted_domains.remove(domain)
+    return {"status": "success", "restricted_domains": list(restricted_domains)}
 
 @app.get("/metrics")
 def get_metrics():

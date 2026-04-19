@@ -14,6 +14,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     urlInput.value = adminUrl;
     statusMsg.textContent = 'Status: Saved';
     statusMsg.style.color = '#3fb950'; // Green
+  } else {
+    statusMsg.textContent = 'Status: Default (Local)';
+    statusMsg.style.color = '#3b82f6'; // Blue
   }
 
   toggleLogging.checked = loggingEnabled;
@@ -32,6 +35,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       adminUrl: url,
       loggingEnabled: toggleLogging.checked
     });
+
+    // Notify background script to sync immediately
+    chrome.runtime.sendMessage({ type: 'SYNC_RESTRICTIONS' });
 
     statusMsg.textContent = 'Settings Saved!';
     statusMsg.style.color = '#3fb950';

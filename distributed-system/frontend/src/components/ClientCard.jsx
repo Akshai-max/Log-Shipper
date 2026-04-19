@@ -4,6 +4,12 @@ import { Monitor, Clock, AlertTriangle } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { getDomainMeta } from '../utils/domainMap';
 
+const formatName = (email) => {
+  if (!email || email === 'unknown') return null;
+  const local = email.split('@')[0].replace(/[._-]/g, ' ').replace(/[0-9]/g, '');
+  return local.split(' ').filter(w => w).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ') || email;
+};
+
 export default function ClientCard({ client }) {
   const navigate = useNavigate();
   
@@ -27,6 +33,7 @@ export default function ClientCard({ client }) {
 
   const lastEventDomain = client.latest_activity || "";
   const { label: activityLabel, icon: ActivityIcon } = getDomainMeta(lastEventDomain);
+  const displayName = client.user_name && client.user_name !== "Unknown User" ? client.user_name : formatName(client.user);
 
   return (
     <motion.div 
@@ -43,10 +50,17 @@ export default function ClientCard({ client }) {
       }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-        <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '10px', fontSize: '1.25rem', fontWeight: '700' }}>
-          <Monitor size={22} style={{ color: '#94a3b8' }} />
-          {client.machine_id}
-        </h3>
+        <div>
+          <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '10px', fontSize: '1.25rem', fontWeight: '700' }}>
+            <Monitor size={22} style={{ color: '#94a3b8' }} />
+            {displayName ? displayName : client.machine_id}
+          </h3>
+          {displayName && (
+            <div style={{ fontSize: '0.8rem', color: '#64748b', marginTop: '4px', marginLeft: '32px' }}>
+              {client.machine_id}
+            </div>
+          )}
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em', padding: '6px 12px', borderRadius: '20px', backgroundColor: `${statusColor}15`, color: statusColor }}>
           <div style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: statusColor, boxShadow: `0 0 8px ${statusColor}` }} />
           {statusText}

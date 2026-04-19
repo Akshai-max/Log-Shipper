@@ -8,6 +8,13 @@ import { getDomainMeta } from '../utils/domainMap';
 
 const COLORS = ['#60a5fa', '#a78bfa', '#f472b6', '#2dd4bf', '#fbbf24', '#34d399'];
 
+const formatName = (email) => {
+  if (!email || email === 'unknown') return null;
+  if (email.toLowerCase() === 'akshaiselfofficial@gmail.com') return 'Akshai';
+  const local = email.split('@')[0].replace(/[._-]/g, ' ').replace(/[0-9]/g, '');
+  return local.split(' ').filter(w => w).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ') || email;
+};
+
 export default function ClientDetail() {
   const { id } = useParams();
   const [data, setData] = useState(null);
@@ -49,6 +56,7 @@ export default function ClientDetail() {
 
   const { label: latestLabel, icon: LatestIcon } = getDomainMeta(latestDomain);
   const fakeTree = { [id]: { domains: data.domains, alerts: data.alerts } };
+  const displayName = data.user_name && data.user_name !== "Unknown User" ? data.user_name : formatName(data.user);
 
   return (
     <motion.div 
@@ -66,7 +74,13 @@ export default function ClientDetail() {
       <div style={{ backgroundColor: '#1e293b', padding: '32px', borderRadius: '16px', border: '1px solid #334155', marginBottom: '32px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderLeft: isSuspicious ? '8px solid #ef4444' : '8px solid #10b981', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)' }}>
         <div>
           <h2 style={{ margin: 0, fontSize: '2.4rem', display: 'flex', alignItems: 'center', gap: '16px', fontWeight: '800', letterSpacing: '-0.025em' }}>
-            <User size={36} className="text-slate-400" /> {id}
+            <User size={36} className="text-slate-400" /> 
+            {displayName ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <span>{displayName}</span>
+                <span style={{ fontSize: '1rem', color: '#64748b' }}>{id}</span>
+              </div>
+            ) : id}
           </h2>
           <div style={{ marginTop: '16px', fontSize: '1.2rem', color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: '12px' }}>
             <div style={{ padding: '8px', backgroundColor: '#3b82f622', borderRadius: '8px', color: '#3b82f6' }}>

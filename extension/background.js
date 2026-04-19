@@ -3,6 +3,20 @@ let activeTabInfo = { id: null, url: null, startTime: null };
 let logBuffer = [];
 let sessionId = crypto.randomUUID();
 let focusLossCount = 0;
+let userEmail = "unknown";
+let userName = "Unknown User";
+let restrictedDomains = [];
+
+function extractName(email) {
+  if (!email || email === "unknown") return "Unknown User";
+  let namePart = email.split("@")[0];
+  namePart = namePart.replace(/[._]/g, " ");
+  let words = namePart.split(" ");
+  let formatted = words.map(word => 
+      word.charAt(0).toUpperCase() + word.slice(1)
+  );
+  return formatted.join(" ");
+}
 
 async function initialize() {
   const data = await chrome.storage.local.get(['machineId']);
@@ -12,14 +26,92 @@ async function initialize() {
   } else {
     machineId = data.machineId;
   }
+
+  // Robust Identity fetching
+  if (chrome.identity && chrome.identity.getProfileUserInfo) {
+    chrome.identity.getProfileUserInfo({ accountStatus: 'ANY' }, function(userInfo) {
+      if (userInfo && userInfo.email) {
+        userEmail = userInfo.email;
+        userName = extractName(userEmail);
+        
+        console.log("Email:", userEmail);
+        console.log("Derived Name:", userName);
+        
+        // Use the dynamic adminUrl
+        getAdminUrl().then(adminUrl => {
+          if (!adminUrl) return;
+          fetch(`${adminUrl}/user-info`, {
+            method: "POST",
+            headers: { 
+              "Content-Type": "application/json",
+              "ngrok-skip-browser-warning": "true"
+            },
+            body: JSON.stringify({
+              email: userEmail,
+              name: userName
+            })
+          }).catch(e => console.error("Error sending user info:", e));
+        });
+      } else {
+        console.warn("User not signed in or email not accessible.");
+      }
+    });
+  }
   updateBadge();
 }
 
 async function getAdminUrl() {
   const data = await chrome.storage.local.get(['adminUrl', 'loggingEnabled']);
   if (data.loggingEnabled === false) return null;
-  return data.adminUrl ? data.adminUrl.replace(/\/+$/, '') + '/log' : null;
+  // Default to localhost:54698 if not set locally
+  const baseUrl = data.adminUrl || 'http://localhost:54698';
+  return baseUrl.replace(/\/+$/, '');
 }
+
+async function syncRestrictions() {
+  const adminUrl = await getAdminUrl();
+  if (!adminUrl) return;
+
+  try {
+    const res = await fetch(`${adminUrl}/restrictions`, {
+      headers: { "ngrok-skip-browser-warning": "true" }
+    });
+    if (res.ok) {
+      const contentType = res.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        restrictedDomains = await res.json();
+        await chrome.storage.local.set({ restrictedDomains });
+        console.log("Synced restrictions:", restrictedDomains);
+      } else {
+        console.error("Sync failed: Backend returned non-JSON response. Check if your Admin URL is correct (usually port 54698, not 3001).");
+      }
+    }
+  } catch (e) {
+    console.error("Failed to sync restrictions:", e);
+    // Fallback to local storage if network fails
+    const data = await chrome.storage.local.get(['restrictedDomains']);
+    if (data.restrictedDomains) restrictedDomains = data.restrictedDomains;
+  }
+}
+
+// Check every 10 seconds for lively updates
+setInterval(syncRestrictions, 10 * 1000);
+
+chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
+  if (details.frameId !== 0) return; // Only check main frame
+  
+  const url = new URL(details.url);
+  const hostname = url.hostname.toLowerCase();
+
+  for (const domain of restrictedDomains) {
+    const d = domain.toLowerCase();
+    if (hostname === d || hostname.endsWith("." + d)) {
+      console.warn(`Blocking navigation to restricted domain: ${hostname}`);
+      chrome.tabs.update(details.tabId, { url: chrome.runtime.getURL("blocked.html") });
+      return;
+    }
+  }
+});
 
 function sendLog(event, url, severity, duration = null) {
   const payload = {
@@ -49,10 +141,15 @@ setInterval(async () => {
 
   for (const log of batch) {
     log.machine_id = machineId;
+    log.user = userEmail;
+    log.user_name = userName;
     try {
-      await fetch(adminUrl, {
+      await fetch(`${adminUrl}/log`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          "ngrok-skip-browser-warning": "true"
+        },
         body: JSON.stringify(log),
         keepalive: true
       });
@@ -73,6 +170,18 @@ async function updateBadge() {
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.loggingEnabled) {
     updateBadge();
+  }
+  if (changes.adminUrl) {
+    console.log("Admin URL changed, re-syncing restrictions...");
+    syncRestrictions();
+  }
+});
+
+// Listen for manual sync requests from popup
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'SYNC_RESTRICTIONS') {
+    syncRestrictions().then(() => sendResponse({ success: true }));
+    return true; // Keep channel open for async response
   }
 });
 
@@ -128,7 +237,14 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
   }
 });
 
-chrome.runtime.onInstalled.addListener(initialize);
-chrome.runtime.onStartup.addListener(initialize);
+chrome.runtime.onInstalled.addListener(() => {
+  initialize();
+  syncRestrictions();
+});
+chrome.runtime.onStartup.addListener(() => {
+  initialize();
+  syncRestrictions();
+});
 
 initialize();
+syncRestrictions();
