@@ -6,6 +6,7 @@ import Home from './pages/Home';
 import ClientDetail from './pages/ClientDetail';
 import GlobalMetrics from './pages/GlobalMetrics';
 import Restrictions from './pages/Restrictions';
+import NotFound from './pages/NotFound';
 import './index.css';
 
 function AnimatedRoutes() {
@@ -17,6 +18,7 @@ function AnimatedRoutes() {
         <Route path="/client/:id" element={<ClientDetail />} />
         <Route path="/metrics" element={<GlobalMetrics />} />
         <Route path="/restrictions" element={<Restrictions />} />
+        <Route path="*" element={<NotFound />} />
       </Routes>
     </AnimatePresence>
   );

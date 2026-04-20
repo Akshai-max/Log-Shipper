@@ -1,11 +1,20 @@
-let machineId = null;
+let deviceId = null;
+let clientId = null;
 let activeTabInfo = { id: null, url: null, startTime: null };
 let logBuffer = [];
 let sessionId = crypto.randomUUID();
 let focusLossCount = 0;
-let userEmail = "unknown";
-let userName = "Unknown User";
+let userEmail = "anonymous";
+let userName = "Anonymous";
 let restrictedDomains = [];
+
+async function sha256(message) {
+  const msgBuffer = new TextEncoder().encode(message);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  return hashHex;
+}
 
 function extractName(email) {
   if (!email || email === "unknown") return "Unknown User";
@@ -19,44 +28,64 @@ function extractName(email) {
 }
 
 async function initialize() {
-  const data = await chrome.storage.local.get(['machineId']);
-  if (!data.machineId) {
-    machineId = crypto.randomUUID();
-    await chrome.storage.local.set({ machineId });
+  const data = await chrome.storage.local.get(['device_id', 'client_id', 'last_email']);
+  
+  // 1. Device ID logic
+  if (!data.device_id) {
+    deviceId = crypto.randomUUID();
+    await chrome.storage.local.set({ device_id: deviceId });
   } else {
-    machineId = data.machineId;
+    deviceId = data.device_id;
   }
 
-  // Robust Identity fetching
+  // 2. Fetch User Email
   if (chrome.identity && chrome.identity.getProfileUserInfo) {
-    chrome.identity.getProfileUserInfo({ accountStatus: 'ANY' }, function(userInfo) {
-      if (userInfo && userInfo.email) {
-        userEmail = userInfo.email;
-        userName = extractName(userEmail);
-        
-        console.log("Email:", userEmail);
-        console.log("Derived Name:", userName);
-        
-        // Use the dynamic adminUrl
-        getAdminUrl().then(adminUrl => {
-          if (!adminUrl) return;
-          fetch(`${adminUrl}/user-info`, {
-            method: "POST",
-            headers: { 
-              "Content-Type": "application/json",
-              "ngrok-skip-browser-warning": "true"
-            },
-            body: JSON.stringify({
-              email: userEmail,
-              name: userName
-            })
-          }).catch(e => console.error("Error sending user info:", e));
+    chrome.identity.getProfileUserInfo({ accountStatus: 'ANY' }, async function(userInfo) {
+      const currentEmail = (userInfo && userInfo.email) ? userInfo.email : "anonymous";
+      
+      // Update identity globals
+      userEmail = currentEmail;
+      userName = extractName(userEmail);
+
+      // 3. Client ID logic (Generate if missing or if email changed)
+      if (!data.client_id || data.last_email !== currentEmail) {
+        clientId = await sha256(currentEmail + deviceId);
+        await chrome.storage.local.set({ 
+          client_id: clientId, 
+          last_email: currentEmail 
         });
+        console.log("Generated new client_id:", clientId);
       } else {
-        console.warn("User not signed in or email not accessible.");
+        clientId = data.client_id;
+      }
+
+      console.log("Identity Resolved:", { userEmail, deviceId, clientId });
+
+      // Notify backend about current user info
+      const adminUrl = await getAdminUrl();
+      if (adminUrl) {
+        fetch(`${adminUrl}/user-info`, {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            "ngrok-skip-browser-warning": "true"
+          },
+          body: JSON.stringify({
+            email: userEmail,
+            name: userName,
+            device_id: deviceId,
+            client_id: clientId
+          })
+        }).catch(e => console.error("Error sending user info:", e));
       }
     });
+  } else {
+    // Fallback if identity API is unavailable
+    userEmail = "anonymous";
+    clientId = await sha256(userEmail + deviceId);
+    console.warn("Identity API unavailable. Using anonymous client_id:", clientId);
   }
+  
   updateBadge();
 }
 
@@ -134,14 +163,15 @@ setInterval(async () => {
   if (logBuffer.length === 0) return;
   
   const adminUrl = await getAdminUrl();
-  if (!adminUrl || !machineId) return;
+  if (!adminUrl || !deviceId || !clientId) return;
 
   const batch = [...logBuffer]; 
   logBuffer = [];
 
   for (const log of batch) {
-    log.machine_id = machineId;
-    log.user = userEmail;
+    log.device_id = deviceId;
+    log.client_id = clientId;
+    log.email = userEmail;
     log.user_name = userName;
     try {
       await fetch(`${adminUrl}/log`, {

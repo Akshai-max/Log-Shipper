@@ -6,6 +6,7 @@ import { getDomainMeta } from '../utils/domainMap';
 
 const formatName = (email) => {
   if (!email || email === 'unknown') return null;
+  if (email.toLowerCase().includes('akshaiselfofficial')) return 'Akshai';
   const local = email.split('@')[0].replace(/[._-]/g, ' ').replace(/[0-9]/g, '');
   return local.split(' ').filter(w => w).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ') || email;
 };
@@ -55,9 +56,9 @@ export default function ClientCard({ client }) {
             <Monitor size={22} style={{ color: '#94a3b8' }} />
             {displayName ? displayName : client.machine_id}
           </h3>
-          {displayName && (
-            <div style={{ fontSize: '0.8rem', color: '#64748b', marginTop: '4px', marginLeft: '32px' }}>
-              {client.machine_id}
+          { (client.device_id || client.machine_id) && (
+            <div style={{ fontSize: '0.8rem', color: '#64748b', marginTop: '4px', marginLeft: '32px', fontFamily: 'monospace' }}>
+              ID: {client.device_id ? client.device_id.split('-')[0] + '...' : client.machine_id.substring(0, 12) + '...'}
             </div>
           )}
         </div>

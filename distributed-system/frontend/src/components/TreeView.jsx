@@ -9,11 +9,28 @@ function TreeNode({ name, data, level = 0, isRoot = false }) {
   const isLeaf = typeof data !== 'object' || data === null || !isNaN(data);
 
   if (isLeaf) {
+    let formattedData = data;
+    if (name === 'time_spent') {
+      const seconds = Number(data);
+      if (seconds < 60) {
+        formattedData = `${seconds.toFixed(0)}s`;
+      } else {
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        if (mins < 60) {
+          formattedData = `${mins}m ${secs}s`;
+        } else {
+          const hrs = Math.floor(mins / 60);
+          formattedData = `${hrs}h ${mins % 60}m`;
+        }
+      }
+    }
+
     return (
       <div style={{ display: 'flex', alignItems: 'center', padding: '6px 0', paddingLeft: `${(level + 1) * 20}px`, fontSize: '0.9rem', color: '#cbd5e1' }}>
         <Clock size={14} style={{ marginRight: '8px', color: '#10b981' }} />
-        <span style={{ color: '#94a3b8', marginRight: '8px' }}>{name}:</span>
-        <span style={{ fontFamily: 'monospace', fontWeight: 'bold', color: '#f8fafc' }}>{data}</span>
+        <span style={{ color: '#94a3b8', marginRight: '8px' }}>{name.replace(/_/g, ' ')}:</span>
+        <span style={{ fontFamily: 'monospace', fontWeight: 'bold', color: '#f8fafc' }}>{formattedData}</span>
       </div>
     );
   }

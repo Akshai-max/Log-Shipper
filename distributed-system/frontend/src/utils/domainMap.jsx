@@ -1,5 +1,5 @@
 import React from 'react';
-import { Play, Search, Bot, Globe, FileText, Github, Terminal, MessageSquare, Mail } from 'lucide-react';
+import { Play, Search, Bot, Globe, FileText, Github, Terminal, MessageSquare, Mail, ShieldCheck } from 'lucide-react';
 
 export function getDomainMeta(domain) {
   if (!domain) return { label: 'Unknown', icon: Globe };
@@ -13,6 +13,7 @@ export function getDomainMeta(domain) {
   if (lower.includes('docs.')) return { label: 'Documentation', icon: FileText };
   if (lower.includes('mail.google') || lower.includes('outlook')) return { label: 'Email', icon: Mail };
   if (lower.includes('slack.com') || lower.includes('discord.com')) return { label: 'Chat / Comms', icon: MessageSquare };
+  if (lower.length > 30 && !lower.includes('.')) return { label: 'Restricted Access', icon: ShieldCheck };
 
   return { label: domain, icon: Globe };
 }

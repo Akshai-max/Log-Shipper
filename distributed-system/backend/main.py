@@ -4,7 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 from typing import Optional
+from fastapi import HTTPException
 from urllib.parse import urlparse
+import hashlib
+import time
 
 app = FastAPI()
 
@@ -16,13 +19,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-total_events = Counter("total_events", "Total logged events", ["machine_id", "event"])
-time_spent_seconds = Counter("time_spent_seconds", "Total time spent", ["machine_id", "domain"])
-active_users = Gauge("active_users", "Number of unique active machines")
-tab_switch_count = Counter("tab_switch_count", "Tab switches per machine", ["machine_id"])
-suspicious_activity_count = Counter("suspicious_activity_count", "Suspicious high-severity events", ["machine_id"])
+total_events = Counter("total_events", "Total logged events", ["client_id", "event"])
+time_spent_seconds = Counter("time_spent_seconds", "Total time spent", ["client_id", "domain"])
+active_users = Gauge("active_users", "Number of unique active clients")
+tab_switch_count = Counter("tab_switch_count", "Tab switches per client", ["client_id"])
+suspicious_activity_count = Counter("suspicious_activity_count", "Suspicious high-severity events", ["client_id"])
 
-import time
+def verify_client_id(email: str, device_id: str, client_id: str) -> bool:
+    """Validate that the client_id is the SHA256 hash of (email + device_id)"""
+    raw = f"{email}{device_id}"
+    expected = hashlib.sha256(raw.encode()).hexdigest()
+    return expected == client_id
 
 clients_db = {}
 restricted_domains = set()
@@ -33,11 +40,14 @@ class RestrictionRequest(BaseModel):
 class UserInfo(BaseModel):
     email: str
     name: str
+    device_id: str
+    client_id: str
 
 class LogEntry(BaseModel):
-    machine_id: str
-    user: Optional[str] = "unknown"
-    user_name: Optional[str] = "Unknown User"
+    client_id: str
+    device_id: str
+    email: str
+    user_name: Optional[str] = "Anonymous"
     event: str
     url: str
     timestamp: Optional[str] = ""
@@ -48,39 +58,53 @@ class LogEntry(BaseModel):
 
 @app.post("/log")
 async def receive_log(log: LogEntry):
+    # Security: Validate client_id
+    if not verify_client_id(log.email, log.device_id, log.client_id):
+        raise HTTPException(status_code=403, detail="Invalid client_id. Hash mismatch.")
+
     domain = urlparse(log.url).netloc or log.url if log.url else "unknown"
 
-    total_events.labels(machine_id=log.machine_id, event=log.event).inc()
+    total_events.labels(client_id=log.client_id, event=log.event).inc()
     
     # Update Security Score
     score_increment = 0
     if log.severity in ["high", "critical"]:
         score_increment += 10
-        suspicious_activity_count.labels(machine_id=log.machine_id).inc()
+        suspicious_activity_count.labels(client_id=log.client_id).inc()
     if log.focus_loss_count > 5:
         score_increment += 2
 
     # Aggregation
-    m_id = log.machine_id
+    c_id = log.client_id
     now = int(time.time())
     
-    if m_id not in clients_db:
-        clients_db[m_id] = {
-            "machine_id": m_id,
-            "user": log.user,
+    if c_id not in clients_db:
+        clients_db[c_id] = {
+            "client_id": c_id,
+            "device_id": log.device_id,
+            "email": log.email,
+            "user_name": log.user_name,
             "last_seen": now,
             "total_events": 0,
             "suspicious_score": 0,
             "domains": {},
-            "activity_timeline": []
+            "activity_timeline": [],
+            "risk_factors": set()
         }
         active_users.set(len(clients_db))
     
-    client = clients_db[m_id]
-    if log.user and log.user != "unknown":
-        client["user"] = log.user
-    if log.user_name and log.user_name != "Unknown User":
-        client["user_name"] = log.user_name
+    client = clients_db[c_id]
+
+    # Update risk factors
+    if log.severity in ["high", "critical"]:
+        client["risk_factors"].add("High-severity activity detected")
+    if log.focus_loss_count > 5:
+        client["risk_factors"].add("Frequent switching away from workspace")
+    if log.duration_ms > 300000: # 5 minutes
+        client["risk_factors"].add("Long session on single domain")
+
+    client["email"] = log.email
+    client["user_name"] = log.user_name
     client["last_seen"] = now
     client["total_events"] += 1
     client["suspicious_score"] += score_increment
@@ -100,9 +124,27 @@ async def receive_log(log: LogEntry):
 
 @app.post("/user-info")
 async def register_user_info(info: UserInfo):
-    # This endpoint can be used for explicit registration
-    # For now, we mainly rely on /log to update the DB, 
-    # but we'll store this if we can map it to a machine later.
+    if not verify_client_id(info.email, info.device_id, info.client_id):
+        raise HTTPException(status_code=403, detail="Invalid client_id. Hash mismatch.")
+    
+    c_id = info.client_id
+    if c_id not in clients_db:
+        clients_db[c_id] = {
+            "client_id": c_id,
+            "device_id": info.device_id,
+            "email": info.email,
+            "user_name": info.name,
+            "last_seen": int(time.time()),
+            "total_events": 0,
+            "suspicious_score": 0,
+            "domains": {},
+            "activity_timeline": [],
+            "risk_factors": set()
+        }
+    else:
+        clients_db[c_id]["user_name"] = info.name
+        clients_db[c_id]["email"] = info.email
+
     return {"status": "success", "received": info}
 
 @app.get("/clients")
@@ -116,29 +158,32 @@ def get_clients_summary():
             
         summary.append({
             "machine_id": m_id,
-            "user": data.get("user", "unknown"),
-            "user_name": data.get("user_name", "Unknown User"),
+            "device_id": data.get("device_id", "Unknown"),
+            "user": data.get("email", "anonymous"),
+            "user_name": data.get("user_name", "Anonymous"),
             "status": "active" if (now - data["last_seen"]) < 60 else "idle",
             "total_events": data["total_events"],
             "last_seen": data["last_seen"],
             "suspicious_score": data["suspicious_score"],
-            "latest_activity": latest_act
+            "latest_activity": latest_act,
+            "risk_factors": list(data.get("risk_factors", []))
         })
     return summary
 
-@app.get("/client/{machine_id}")
-def get_client_detail(machine_id: str):
-    if machine_id not in clients_db:
-        from fastapi import HTTPException
+@app.get("/client/{client_id}")
+def get_client_detail(client_id: str):
+    if client_id not in clients_db:
         raise HTTPException(status_code=404, detail="Client not found")
         
-    data = clients_db[machine_id]
+    data = clients_db[client_id]
     return {
-        "machine_id": machine_id,
-        "user": data.get("user", "unknown"),
-        "user_name": data.get("user_name", "Unknown User"),
+        "machine_id": client_id,
+        "device_id": data.get("device_id", "Unknown"),
+        "user": data.get("email", "anonymous"),
+        "user_name": data.get("user_name", "Anonymous"),
         "domains": data["domains"],
-        "alerts": ["High Suspicious Activity"] if data["suspicious_score"] > 30 else [],
+        "alerts": list(data.get("risk_factors", [])),
+        "risk_factors": list(data.get("risk_factors", [])),
         "activity_timeline": data["activity_timeline"]
     }
 
