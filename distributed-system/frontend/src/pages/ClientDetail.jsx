@@ -21,7 +21,7 @@ export default function ClientDetail() {
   useEffect(() => {
     const fetchDetail = async () => {
       try {
-        const res = await fetch(`http://localhost:54698/client/${id}`);
+        const res = await fetch(`/api/client/${id}`);
         if(res.ok) setData(await res.json());
       } catch (e) {}
     };

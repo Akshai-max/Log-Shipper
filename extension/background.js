@@ -7,6 +7,22 @@ let focusLossCount = 0;
 let userEmail = "anonymous";
 let userName = "Anonymous";
 let restrictedDomains = [];
+let isSyncing = false;
+let isInitialized = false; // NEW
+let isSynced = false; // NEW
+
+// Helper to wrap identity API in a Promise
+function getIdentity() {
+  return new Promise((resolve) => {
+    if (chrome.identity && chrome.identity.getProfileUserInfo) {
+      chrome.identity.getProfileUserInfo({ accountStatus: 'ANY' }, (userInfo) => {
+        resolve(userInfo);
+      });
+    } else {
+      resolve(null);
+    }
+  });
+}
 
 async function sha256(message) {
   const msgBuffer = new TextEncoder().encode(message);
@@ -17,19 +33,23 @@ async function sha256(message) {
 }
 
 function extractName(email) {
-  if (!email || email === "unknown") return "Unknown User";
+  if (!email || email === "unknown" || email === "anonymous") return "Anonymous";
   let namePart = email.split("@")[0];
   namePart = namePart.replace(/[._]/g, " ");
   let words = namePart.split(" ");
-  let formatted = words.map(word => 
-      word.charAt(0).toUpperCase() + word.slice(1)
+  let formatted = words.map(word =>
+    word.charAt(0).toUpperCase() + word.slice(1)
   );
   return formatted.join(" ");
 }
 
+// FIXED: Added robust initialization flow
 async function initialize() {
+  console.log("Initializing synchronized flow...");
+  isInitialized = false; // Reset on init start
+
   const data = await chrome.storage.local.get(['device_id', 'client_id', 'last_email']);
-  
+
   // 1. Device ID logic
   if (!data.device_id) {
     deviceId = crypto.randomUUID();
@@ -38,68 +58,103 @@ async function initialize() {
     deviceId = data.device_id;
   }
 
-  // 2. Fetch User Email
-  if (chrome.identity && chrome.identity.getProfileUserInfo) {
-    chrome.identity.getProfileUserInfo({ accountStatus: 'ANY' }, async function(userInfo) {
-      const currentEmail = (userInfo && userInfo.email) ? userInfo.email : "anonymous";
-      
-      // Update identity globals
-      userEmail = currentEmail;
-      userName = extractName(userEmail);
+  // 2. Resolve Identity
+  const userInfo = await getIdentity();
+  userEmail = (userInfo && userInfo.email) ? userInfo.email : "anonymous";
+  userName = extractName(userEmail);
 
-      // 3. Client ID logic (Generate if missing or if email changed)
-      if (!data.client_id || data.last_email !== currentEmail) {
-        clientId = await sha256(currentEmail + deviceId);
-        await chrome.storage.local.set({ 
-          client_id: clientId, 
-          last_email: currentEmail 
-        });
-        console.log("Generated new client_id:", clientId);
-      } else {
-        clientId = data.client_id;
-      }
-
-      console.log("Identity Resolved:", { userEmail, deviceId, clientId });
-
-      // Notify backend about current user info
-      const adminUrl = await getAdminUrl();
-      if (adminUrl) {
-        fetch(`${adminUrl}/user-info`, {
-          method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            "ngrok-skip-browser-warning": "true"
-          },
-          body: JSON.stringify({
-            email: userEmail,
-            name: userName,
-            device_id: deviceId,
-            client_id: clientId
-          })
-        }).catch(e => console.error("Error sending user info:", e));
-      }
-    });
-  } else {
-    // Fallback if identity API is unavailable
-    userEmail = "anonymous";
+  // 3. Client ID logic (Generate if missing or if email changed)
+  if (!data.client_id || data.last_email !== userEmail) {
     clientId = await sha256(userEmail + deviceId);
-    console.warn("Identity API unavailable. Using anonymous client_id:", clientId);
+    await chrome.storage.local.set({
+      client_id: clientId,
+      last_email: userEmail
+    });
+    console.log("Synchronized identity updated:", { userEmail, clientId });
+  } else {
+    clientId = data.client_id;
   }
-  
-  updateBadge();
+
+  isInitialized = true; // FIXED: Set flag after core data is ready
+  console.log("Initialization complete. Data ready for sync.");
+
+  // 4. Initial sync attempt
+  await safeSyncUserInfo();
+  await updateBadge();
+}
+
+// FIXED: syncUserInfo now returns success boolean
+async function syncUserInfo() {
+  const adminUrl = await getAdminUrl();
+  if (!adminUrl) return false;
+
+  try {
+    const response = await fetch(`${adminUrl}/user-info`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true"
+      },
+      body: JSON.stringify({
+        email: userEmail,
+        name: userName,
+        device_id: deviceId,
+        client_id: clientId
+      })
+    });
+    
+    if (response.ok) {
+      console.log("User info successfully synchronized with backend.");
+      isSynced = true;
+      return true;
+    }
+    return false;
+  } catch (e) {
+    console.warn("Backend unavailable for user-info sync. Will retry later.", e.message);
+    return false;
+  }
+}
+
+// NEW: Safe wrapper with delay and validation
+async function safeSyncUserInfo() {
+  if (!isInitialized) {
+    console.warn("Sync aborted: Initialization not complete.");
+    return;
+  }
+
+  if (!userEmail || !deviceId || !clientId) {
+    console.warn("Sync aborted: Missing required identity fields.");
+    return;
+  }
+
+  // Handle ngrok/backend delay
+  console.log("Preparing to send user info (1s delay)...");
+  await new Promise(r => setTimeout(r, 1000));
+
+  const success = await syncUserInfo();
+  if (!success) {
+    isSynced = false;
+    console.log("Sync failed. Periodic retry will handle it.");
+  }
 }
 
 async function getAdminUrl() {
   const data = await chrome.storage.local.get(['adminUrl', 'loggingEnabled']);
   if (data.loggingEnabled === false) return null;
-  // Default to localhost:54698 if not set locally
-  const baseUrl = data.adminUrl || 'http://localhost:54698';
+  const baseUrl = data.adminUrl;
+  if (!baseUrl) return null; 
   return baseUrl.replace(/\/+$/, '');
 }
 
 async function syncRestrictions() {
+  if (isSyncing) return;
+  isSyncing = true;
+
   const adminUrl = await getAdminUrl();
-  if (!adminUrl) return;
+  if (!adminUrl) {
+    isSyncing = false;
+    return;
+  }
 
   try {
     const res = await fetch(`${adminUrl}/restrictions`, {
@@ -108,34 +163,35 @@ async function syncRestrictions() {
     if (res.ok) {
       const contentType = res.headers.get("content-type");
       if (contentType && contentType.includes("application/json")) {
-        restrictedDomains = await res.json();
-        await chrome.storage.local.set({ restrictedDomains });
-        console.log("Synced restrictions:", restrictedDomains);
+        const newRestrictions = await res.json();
+
+        if (JSON.stringify(newRestrictions) !== JSON.stringify(restrictedDomains)) {
+          restrictedDomains = newRestrictions;
+          await chrome.storage.local.set({ restrictedDomains });
+          console.log("Restrictions synchronized:", restrictedDomains);
+        }
       } else {
-        console.error("Sync failed: Backend returned non-JSON response. Check if your Admin URL is correct (usually port 54698, not 3001).");
+        console.error("Sync failed: Non-JSON response from admin server.");
       }
     }
   } catch (e) {
-    console.error("Failed to sync restrictions:", e);
-    // Fallback to local storage if network fails
+    console.error("Failed to sync restrictions (Network Error):", e.message);
     const data = await chrome.storage.local.get(['restrictedDomains']);
     if (data.restrictedDomains) restrictedDomains = data.restrictedDomains;
+  } finally {
+    isSyncing = false;
   }
 }
 
-// Check every 10 seconds for lively updates
-setInterval(syncRestrictions, 10 * 1000);
-
 chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
-  if (details.frameId !== 0) return; // Only check main frame
-  
+  if (details.frameId !== 0) return;
+
   const url = new URL(details.url);
   const hostname = url.hostname.toLowerCase();
 
   for (const domain of restrictedDomains) {
     const d = domain.toLowerCase();
     if (hostname === d || hostname.endsWith("." + d)) {
-      console.warn(`Blocking navigation to restricted domain: ${hostname}`);
       chrome.tabs.update(details.tabId, { url: chrome.runtime.getURL("blocked.html") });
       return;
     }
@@ -143,40 +199,39 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
 });
 
 function sendLog(event, url, severity, duration = null) {
+  if (!isInitialized) return; // Wait for initialization
+
   const payload = {
     event: event,
     url: url || '',
     timestamp: new Date().toISOString(),
     severity: severity,
     session_id: sessionId,
-    focus_loss_count: focusLossCount
+    focus_loss_count: focusLossCount,
+    device_id: deviceId,
+    client_id: clientId,
+    email: userEmail,
+    user_name: userName
   };
 
-  if (duration !== null) {
-    payload.duration_ms = duration;
-  }
-
+  if (duration !== null) payload.duration_ms = duration;
   logBuffer.push(payload);
 }
 
 setInterval(async () => {
   if (logBuffer.length === 0) return;
-  
-  const adminUrl = await getAdminUrl();
-  if (!adminUrl || !deviceId || !clientId) return;
 
-  const batch = [...logBuffer]; 
+  const adminUrl = await getAdminUrl();
+  if (!adminUrl) return;
+
+  const batch = [...logBuffer];
   logBuffer = [];
 
   for (const log of batch) {
-    log.device_id = deviceId;
-    log.client_id = clientId;
-    log.email = userEmail;
-    log.user_name = userName;
     try {
       await fetch(`${adminUrl}/log`, {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
           "ngrok-skip-browser-warning": "true"
         },
@@ -184,41 +239,50 @@ setInterval(async () => {
         keepalive: true
       });
     } catch (e) {
-      logBuffer.unshift(log);
+      logBuffer.unshift(log); 
+      break;
     }
   }
-}, 3000);
+}, 5000);
+
+setInterval(syncRestrictions, 30 * 1000);
+
+// NEW: Periodic retry for user identity sync (every 10s if not synced)
+setInterval(async () => {
+  if (isInitialized && !isSynced) {
+    console.log("Retrying user identity sync...");
+    await safeSyncUserInfo();
+  }
+}, 10000);
 
 async function updateBadge() {
   const data = await chrome.storage.local.get(['loggingEnabled']);
   const enabled = data.loggingEnabled !== false;
-  
   chrome.action.setBadgeText({ text: enabled ? 'ON' : 'OFF' });
   chrome.action.setBadgeBackgroundColor({ color: enabled ? '#3fb950' : '#ff7b72' });
 }
 
-chrome.storage.onChanged.addListener((changes) => {
-  if (changes.loggingEnabled) {
-    updateBadge();
-  }
+// FIXED: Robust adminUrl change listener
+chrome.storage.onChanged.addListener(async (changes) => {
+  if (changes.loggingEnabled) updateBadge();
   if (changes.adminUrl) {
-    console.log("Admin URL changed, re-syncing restrictions...");
-    syncRestrictions();
+    console.log("Admin URL updated, forcing re-initialization and re-sync...");
+    isSynced = false; // Reset sync status for new URL
+    await initialize(); // This will also call safeSyncUserInfo()
+    await syncRestrictions();
   }
 });
 
-// Listen for manual sync requests from popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'SYNC_RESTRICTIONS') {
     syncRestrictions().then(() => sendResponse({ success: true }));
-    return true; // Keep channel open for async response
+    return true;
   }
 });
 
 function recordTimeSpent() {
-  const now = Date.now();
   if (activeTabInfo.id !== null && activeTabInfo.startTime !== null) {
-    const timeSpent = now - activeTabInfo.startTime;
+    const timeSpent = Date.now() - activeTabInfo.startTime;
     if (timeSpent > 0 && activeTabInfo.url) {
       sendLog('time_spent', activeTabInfo.url, 'low', timeSpent);
     }
@@ -231,18 +295,13 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     const tab = await chrome.tabs.get(activeInfo.tabId);
     const url = tab.url || tab.pendingUrl;
     activeTabInfo = { id: activeInfo.tabId, url: url, startTime: Date.now() };
-    if (url) {
-      sendLog('tab_switch', url, 'low');
-    }
-  } catch (e) {
-    // Tab closed or inaccessible
-  }
+    if (url) sendLog('tab_switch', url, 'low');
+  } catch (e) { }
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url) {
     sendLog('navigation', changeInfo.url, 'medium');
-    
     if (tabId === activeTabInfo.id) {
       recordTimeSpent();
       activeTabInfo.url = changeInfo.url;
@@ -255,7 +314,7 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) {
     focusLossCount++;
     recordTimeSpent();
-    activeTabInfo.startTime = null; // Prevent double counting
+    activeTabInfo.startTime = null;
   } else {
     try {
       const tabs = await chrome.tabs.query({ active: true, windowId: windowId });
@@ -263,18 +322,17 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
         const url = tabs[0].url || tabs[0].pendingUrl;
         activeTabInfo = { id: tabs[0].id, url: url, startTime: Date.now() };
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 });
 
-chrome.runtime.onInstalled.addListener(() => {
-  initialize();
-  syncRestrictions();
-});
-chrome.runtime.onStartup.addListener(() => {
-  initialize();
-  syncRestrictions();
-});
-
-initialize();
-syncRestrictions();
+// SINGLE ENTRY POINT for Synchronized Startup
+(async () => {
+  try {
+    await initialize();
+    await syncRestrictions();
+    console.log("Synchronized implementation started successfully.");
+  } catch (e) {
+    console.error("Critical error during synchronized startup:", e);
+  }
+})();

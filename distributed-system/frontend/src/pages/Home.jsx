@@ -8,7 +8,7 @@ export default function Home() {
   useEffect(() => {
     const fetchClients = async () => {
       try {
-        const res = await fetch('http://localhost:54698/clients');
+        const res = await fetch('/api/clients');
         if (res.ok) setClients(await res.json());
       } catch (e) {}
     };

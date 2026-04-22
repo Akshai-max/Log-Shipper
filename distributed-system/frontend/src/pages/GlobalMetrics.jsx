@@ -14,8 +14,8 @@ export default function GlobalMetrics() {
     const fetchData = async () => {
       try {
         const [statsRes, clientsRes] = await Promise.all([
-          fetch('http://localhost:54698/stats'),
-          fetch('http://localhost:54698/clients')
+          fetch('/api/stats'),
+          fetch('/api/clients')
         ]);
         if (statsRes.ok) setStats(await statsRes.json());
         if (clientsRes.ok) setClients(await clientsRes.json());

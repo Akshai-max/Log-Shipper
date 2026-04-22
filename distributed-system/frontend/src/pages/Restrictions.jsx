@@ -9,7 +9,7 @@ export default function Restrictions() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
-  const API_BASE = 'http://localhost:54698';
+  const API_BASE = '/api';
 
   const fetchRestrictions = async () => {
     try {
